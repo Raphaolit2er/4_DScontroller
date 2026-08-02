@@ -65,6 +65,7 @@ def choose_config_file(parent=None):
         load_config()
         return True
     return False
+
 # ============================================================
 # RLE, PALETTE + NETWORKING
 # ============================================================
@@ -140,6 +141,7 @@ single_mappings = {}
 use_zones = True
 show_zones_on_ds = True
 fallback_action = "Mouse Move"
+touch_sensitivity = 1.0  
 
 ds_canvas_image = Image.new("RGBA", (DS_WIDTH, DS_HEIGHT), (20, 20, 20, 0))
 ds_canvas_draw = ImageDraw.Draw(ds_canvas_image)
@@ -169,7 +171,7 @@ def zones_overlap(rect1, ignore=None):
 DS_KEYS_LIST = [
     "A", "B", "SELECT", "START", "RIGHT", "LEFT", "UP", "DOWN",
     "R", "L", "X", "Y", "TOUCH_PRESSED", "TOUCH_LEFT",
-    "TOUCH_RIGHT", "TOUCH_TOP", "TOUCH_BOTTOM"
+    "TOUCH_RIGHT", "TOUCH_UP", "TOUCH_DOWN"
 ]
 
 DS_KEYS = {
@@ -183,6 +185,7 @@ DS_KEYS = {
 # ============================================================
 
 ACTION_MAP = {
+    "None": "None",
     "Xbox A": vg.XUSB_BUTTON.XUSB_GAMEPAD_A, "Xbox B": vg.XUSB_BUTTON.XUSB_GAMEPAD_B,
     "Xbox X": vg.XUSB_BUTTON.XUSB_GAMEPAD_X, "Xbox Y": vg.XUSB_BUTTON.XUSB_GAMEPAD_Y,
     "Xbox Up": vg.XUSB_BUTTON.XUSB_GAMEPAD_DPAD_UP, "Xbox Down": vg.XUSB_BUTTON.XUSB_GAMEPAD_DPAD_DOWN,
@@ -229,7 +232,7 @@ for i in range(1, 13):
 # ============================================================
 
 def save_config():
-    global touch_zones, combos, single_mappings, use_zones, show_zones_on_ds, fallback_action
+    global touch_zones, combos, single_mappings, use_zones, show_zones_on_ds, fallback_action, touch_sensitivity
     data = {
         "touch_zones": touch_zones,
         "combos": combos,
@@ -237,6 +240,7 @@ def save_config():
         "use_zones": use_zones,
         "show_zones_on_ds": show_zones_on_ds,
         "fallback_action": fallback_action,
+        "touch_sensitivity": touch_sensitivity,
     }
     try:
         with open(config_path, "w", encoding="utf-8") as f:
@@ -244,8 +248,32 @@ def save_config():
     except Exception as e:
         print(f"Failed to save config: {e}")
 
+def save_config_dialog(parent=None):
+    """Open a dialog to choose where to save the .dscon file."""
+    global config_path
+    from tkinter import filedialog
+    
+    path = filedialog.asksaveasfilename(
+        parent=parent,
+        title="Save DS Controller Config As",
+        defaultextension=".dscon",
+        filetypes=[("DS Controller Config", "*.dscon")],
+        initialdir=SCRIPT_DIR,
+        initialfile="ds_config.dscon"
+    )
+    
+    if path:
+        # Enforce the .dscon extension if the user didn't type it
+        if not path.lower().endswith(".dscon"):
+            path += ".dscon"
+            
+        config_path = path
+        save_config()  # Write the data to the newly selected path
+        return True
+    return False
+
 def load_config():
-    global touch_zones, combos, single_mappings, use_zones, show_zones_on_ds, fallback_action
+    global touch_zones, combos, single_mappings, use_zones, show_zones_on_ds, fallback_action, touch_sensitivity
     if not os.path.exists(config_path):
         return
     try:
@@ -258,7 +286,12 @@ def load_config():
             use_zones = data.get("use_zones", True)
             show_zones_on_ds = data.get("show_zones_on_ds", True)
             fallback_action = data.get("fallback_action", "Mouse Move")
+            touch_sensitivity = data.get("touch_sensitivity", 1.0)
         print(f"Config loaded from {config_path}")
+        
+        # ---> ADD THIS LINE HERE <---
+        send_current_overlay_to_ds()
+        
     except Exception as e:
         print(f"Failed to load config: {e}")
 
@@ -268,7 +301,7 @@ def load_config():
 
 def apply_action(action_id, current_pynput, special_actions, ps_dpad_active, stick_state):
     global xbox_used, ps_used
-    if action_id not in ACTION_MAP:
+    if action_id not in ACTION_MAP or action_id == "None":
         return
     act = ACTION_MAP[action_id]
 
@@ -322,7 +355,7 @@ def apply_action(action_id, current_pynput, special_actions, ps_dpad_active, sti
 
 def process_inputs(keys_held, touch_active, tx, ty, last_tx, last_ty):
     global last_pynput_actions, last_special_actions, ds_live_state
-    global xbox_used, ps_used
+    global xbox_used, ps_used, touch_sensitivity
 
     ds_live_state["keys"] = keys_held
     ds_live_state["touch"] = touch_active
@@ -351,7 +384,7 @@ def process_inputs(keys_held, touch_active, tx, ty, last_tx, last_ty):
     if touch_active:
         available_keys.add("TOUCH_PRESSED")
         available_keys.add("TOUCH_LEFT" if tx < DS_WIDTH // 2 else "TOUCH_RIGHT")
-        available_keys.add("TOUCH_TOP" if ty < DS_HEIGHT // 2 else "TOUCH_BOTTOM")
+        available_keys.add("TOUCH_UP" if ty < DS_HEIGHT // 2 else "TOUCH_DOWN")
 
         with state_lock:
             if use_zones:
@@ -363,31 +396,39 @@ def process_inputs(keys_held, touch_active, tx, ty, last_tx, last_ty):
                         apply_action(zone["action"], current_pynput, current_special, ps_dpad_active, stick_state)
 
         if not zone_found:
-            if fallback_action == "Mouse Move" and last_tx != -1:
-                mouse.move((tx - last_tx) * MOUSE_MOVE_SCALE, (ty - last_ty) * MOUSE_MOVE_SCALE)
-            elif fallback_action == "Right Stick" and xbox_pad and ps_pad and last_tx != -1:
+            if last_tx != -1:
                 dx = tx - last_tx
                 dy = ty - last_ty
-                strength = RIGHT_STICK_SCALE
-                stick_state['x_rsx'] += dx * strength
-                stick_state['x_rsy'] -= dy * strength
-                stick_state['p_rsx'] += (dx * strength) / float(MAX_STICK)
-                stick_state['p_rsy'] -= (dy * strength) / float(MAX_STICK)
-                xbox_used = True
-                ps_used = True
+                
+                if fallback_action == "Mouse Move":
+                    mouse.move(dx * MOUSE_MOVE_SCALE * touch_sensitivity, dy * MOUSE_MOVE_SCALE * touch_sensitivity)
+                elif fallback_action == "Right Stick" and xbox_pad and ps_pad:
+                    strength = RIGHT_STICK_SCALE * touch_sensitivity
+                    stick_state['x_rsx'] += dx * strength
+                    stick_state['x_rsy'] -= dy * strength                     # Xbox Y is +UP/-DOWN
+                    stick_state['p_rsx'] += (dx * strength) / float(MAX_STICK)
+                    stick_state['p_rsy'] += (dy * strength) / float(MAX_STICK) # PS4 Y is -UP/+DOWN (Fixed polarity)
+                    xbox_used = True
+                    ps_used = True
+
+    # ----------------------- COMBO LOGIC -----------------------
+    with state_lock:
+        current_combos = list(combos)
 
     used_keys = set()
-    for combo in sorted(combos, key=lambda c: len(c["triggers"]), reverse=True):
-        triggers = set(combo["triggers"])
-        if triggers.issubset(available_keys) and not triggers.intersection(used_keys):
+    for combo in sorted(current_combos, key=lambda c: len(c.get("triggers", [])), reverse=True):
+        triggers = set(str(t).upper().strip() for t in combo.get("triggers", []))
+        if triggers and triggers.issubset(available_keys) and not triggers.intersection(used_keys):
             used_keys.update(triggers)
-            for output in combo["outputs"]:
+            for output in combo.get("outputs", []):
                 apply_action(output, current_pynput, current_special, ps_dpad_active, stick_state)
 
     available_keys -= used_keys
+    
     for key in available_keys:
         if key in single_mappings:
             apply_action(single_mappings[key], current_pynput, current_special, ps_dpad_active, stick_state)
+    # ----------------------------------------------------------------------
 
     if xbox_pad and (xbox_used or xbox_was_used):
         xbox_pad.left_joystick(
@@ -461,26 +502,78 @@ def process_inputs(keys_held, touch_active, tx, ty, last_tx, last_ty):
 # NETWORKING: HYBRID PROTOCOL
 # ============================================================
 
+def send_current_overlay_to_ds():
+    """Builds and sends the current touch zone layout to the connected DS."""
+    try:
+        # Explicitly declare all the variables we need to read/write
+        global ds_canvas_image, show_zones_on_ds, use_zones, touch_zones, client_conn
+        
+        # 1. Check if we even have a connection to avoid useless processing
+        with sock_lock:
+            if client_conn is None:
+                return  # Silently skip if no DS is connected
+            conn = client_conn
+
+        # 2. Create the base background
+        base_img = Image.new("RGBA", (DS_WIDTH, DS_HEIGHT), (20, 20, 20, 255))
+        draw = ImageDraw.Draw(base_img)
+        
+        with state_lock:
+            if show_zones_on_ds and use_zones:
+                for zone in touch_zones:
+                    x1, y1, x2, y2 = zone["rect"]
+                    fill_color = zone.get("color", "#883333")
+                    outline_color = zone.get("outline", "#ffffff")
+                    if fill_color == "":
+                        fill_color = (0, 0, 0, 0)
+                    draw.rectangle(
+                        [min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2)],
+                        fill=fill_color, outline=outline_color, width=2
+                    )
+                    draw.text(
+                        (min(x1, x2) + 4, min(y1, y2) + 4),
+                        f"{zone.get('name', 'Zone')}\n({zone['action']})",
+                        fill="#ffffff"
+                    )
+            # Overlay any custom paint drawn by the user
+            base_img.alpha_composite(ds_canvas_image)
+
+        # 3. Encode and build the packet
+        rle = encode_image_rle(base_img)
+        header = struct.pack(">BHHHH", 0x01, 0, 0, DS_WIDTH, DS_HEIGHT)
+        size_field = struct.pack(">I", len(rle))
+        packet = header + size_field + rle + b"\xFE"
+
+        # 4. Send it over the socket
+        conn.settimeout(5.0)
+        conn.sendall(packet)
+        conn.settimeout(1.0)
+        print("Overlay successfully sent to DS.")
+
+    except Exception as e:
+        # If anything fails, pop up an error box so we can see the exact crash
+        import traceback
+        traceback.print_exc()
+        try:
+            from tkinter import messagebox
+            messagebox.showerror("Send Error", f"Failed to send to DS:\n\n{e}")
+        except:
+            pass
+
 def recv_exact(sock, size, max_timeouts=5):
-    """
-    Read exactly `size` bytes.
-    - Keeps partial data across socket timeouts (NEVER desyncs the stream).
-    - Returns None if the peer closes or stalls too long mid-packet, so the
-      caller drops the client cleanly instead of parsing garbage.
-    """
     data = b""
     timeouts = 0
     while len(data) < size and server_running:
         try:
             chunk = sock.recv(size - len(data))
             if not chunk:
-                return None              # clean close by peer
+                return None
             data += chunk
             timeouts = 0
         except socket.timeout:
             timeouts += 1
             if timeouts >= max_timeouts:
-                return None              # stalled mid-packet -> treat as dead
+                return None
         except Exception:
             return None
     return data
@@ -511,29 +604,25 @@ def handle_client(conn, addr):
                 continue
 
             if not data:
-                break  # DS closed the connection
+                break
 
             event = data[0]
 
-            # 1. Button Pressed (0-11)
             if event < 12:
                 held_keys |= (1 << event)
                 push_state(held_keys, touch_active, last_tx, last_ty, last_tx, last_ty, 10)
 
-            # 2. Button Released (128-139)
             elif 128 <= event < 140:
                 held_keys &= ~(1 << (event - 128))
                 push_state(held_keys, touch_active, last_tx, last_ty, last_tx, last_ty, 10)
 
-            # 3. Touch List (0xFC, count, count*4 coords, 0xFD)
             elif event == 0xFC:
                 count_data = recv_exact(conn, 1)
                 if not count_data:
-                    break  # timeout/close -> clean drop, no desync
+                    break
 
                 point_count = count_data[0]
-                if point_count > 10:  # DS never sends more than 10 points
-                    print("Protocol desync (bad count) - dropping client")
+                if point_count > 10:
                     break
 
                 if point_count > 0:
@@ -542,7 +631,6 @@ def handle_client(conn, addr):
                         break
                     end_data = recv_exact(conn, 1)
                     if not end_data or end_data[0] != 0xFD:
-                        print("Protocol desync (missing 0xFD) - dropping client")
                         break
 
                     for i in range(point_count):
@@ -561,17 +649,11 @@ def handle_client(conn, addr):
                 else:
                     end_data = recv_exact(conn, 1)
                     if not end_data or end_data[0] != 0xFD:
-                        print("Protocol desync (missing 0xFD) - dropping client")
                         break
                     touch_active = False
                     last_tx, last_ty = -1, -1
                     push_state(held_keys, False, 0, 0, -1, -1, 15)
-
-            # 4. Unknown byte = stream desync. The old code silently ignored
-            #    it (this is why buttons "froze"). Now: drop the client
-            #    cleanly so both sides resync on reconnect.
             else:
-                print(f"Protocol desync (unknown byte 0x{event:02X}) - dropping client")
                 break
 
     except Exception as e:
@@ -584,7 +666,6 @@ def handle_client(conn, addr):
                 client_conn = None
         if still_owner:
             held_keys = 0
-            # Release ALL held inputs so keys never stay stuck after a drop
             try:
                 input_queue.put_nowait((0, False, 0, 0, -1, -1))
             except Exception:
@@ -604,7 +685,6 @@ def accept_loop(port):
         server_socket.bind(("0.0.0.0", port))
         server_socket.listen(1)
         server_socket.settimeout(1.0)
-
     except OSError as e:
         print(f"Server startup failed: {e}")
         server_running = False
@@ -619,21 +699,16 @@ def accept_loop(port):
             with sock_lock:
                 old = client_conn
             if old:
-                try:
-                    old.shutdown(socket.SHUT_RDWR)
-                except OSError:
-                    pass
-                try:
-                    old.close()
-                except OSError:
-                    pass
+                try: old.shutdown(socket.SHUT_RDWR)
+                except OSError: pass
+                try: old.close()
+                except OSError: pass
 
             threading.Thread(
                 target=handle_client,
                 args=(conn, addr),
                 daemon=True
             ).start()
-
         except socket.timeout:
             continue
         except OSError:
@@ -646,7 +721,6 @@ def accept_loop(port):
         server_socket.close()
     except Exception:
         pass
-
     server_socket = None
     server_running = False
 
@@ -661,35 +735,25 @@ def cleanup_and_exit(root_window):
     
     with sock_lock:
         if client_conn:
-            try:
-                client_conn.close()
-            except Exception:
-                pass
+            try: client_conn.close()
+            except Exception: pass
 
     if server_socket:
-        try:
-            server_socket.close()
-        except Exception:
-            pass
+        try: server_socket.close()
+        except Exception: pass
             
     try:
         if xbox_pad:
             xbox_pad.reset()
-            try:
-                xbox_pad.update()
-            except Exception:
-                pass
+            try: xbox_pad.update()
+            except Exception: pass
         if ps_pad:
             ps_pad.reset()
-            try:
-                ps_pad.update()
-            except Exception:
-                pass
+            try: ps_pad.update()
+            except Exception: pass
         for k in last_pynput_actions:
-            if isinstance(k, Button):
-                mouse.release(k)
-            else:
-                keyboard.release(k)
+            if isinstance(k, Button): mouse.release(k)
+            else: keyboard.release(k)
     except Exception:
         pass
     root_window.destroy()
@@ -722,7 +786,7 @@ class ActionSelectorDialog(tk.Toplevel):
         super().__init__(parent)
         self.transient(parent)
         self.title("Select PC Output Action")
-        self.geometry("550x550")
+        self.geometry("550x600")
         
         self.protocol("WM_DELETE_WINDOW", self.destroy)
         self.wait_visibility()
@@ -780,10 +844,16 @@ class ActionSelectorDialog(tk.Toplevel):
 
         tk.Button(kb, text="Select", command=self.on_listbox_select).pack(pady=5)
 
+        # Bottom Frame for None/Clear and Confirm options
+        bottom_frame = tk.Frame(self)
+        bottom_frame.pack(fill=tk.X, padx=10, pady=5)
+
+        tk.Button(bottom_frame, text="None / Clear (Unmap)", bg="#ffcccc", command=lambda: self.select("None")).pack(side=tk.LEFT, padx=5, pady=5)
+
         if multi_select:
-            self.label = tk.Label(self, text="Selected: None")
-            self.label.pack()
-            tk.Button(self, text="Confirm", command=self.confirm).pack(pady=5)
+            self.label = tk.Label(bottom_frame, text="Selected: None")
+            self.label.pack(side=tk.LEFT, padx=5)
+            tk.Button(bottom_frame, text="Confirm", bg="#ccffcc", command=self.confirm).pack(side=tk.RIGHT, padx=5, pady=5)
 
     def on_listbox_select(self):
         sel = self.key_box.curselection()
@@ -800,8 +870,13 @@ class ActionSelectorDialog(tk.Toplevel):
                 self.callback([action])
             self.destroy()
         else:
-            if action not in self.selected:
-                self.selected.append(action)
+            if action == "None":
+                self.selected = ["None"]
+            else:
+                if "None" in self.selected:
+                    self.selected.remove("None")
+                if action not in self.selected:
+                    self.selected.append(action)
             self.label.config(text="Selected: " + ", ".join(self.selected))
 
     def confirm(self):
@@ -817,11 +892,11 @@ class ActionSelectorDialog(tk.Toplevel):
         super().destroy()
 
 class ComboBuilder(tk.Toplevel):
-    def __init__(self, parent, on_save_callback):
+    def __init__(self, parent, on_save_callback, existing_data=None, edit_index=None):
         super().__init__(parent)
         self.transient(parent)
-        self.title("Build New Combo")
-        self.geometry("500x350")
+        self.title("Edit Combo" if existing_data else "Build New Combo")
+        self.geometry("500x380")
         
         self.protocol("WM_DELETE_WINDOW", self.destroy)
         self.wait_visibility()
@@ -829,7 +904,9 @@ class ComboBuilder(tk.Toplevel):
         self.focus_force()
 
         self.on_save = on_save_callback
-        self.triggers, self.outputs = [], []
+        self.edit_index = edit_index
+        self.triggers = list(existing_data["triggers"]) if existing_data else []
+        self.outputs = list(existing_data["outputs"]) if existing_data else []
 
         f_l = tk.Frame(self)
         f_l.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
@@ -840,13 +917,16 @@ class ComboBuilder(tk.Toplevel):
         self.lb_triggers = tk.Listbox(f_l, height=10)
         self.lb_triggers.pack(fill=tk.BOTH, expand=True)
         tk.Button(f_l, text="+ Add DS/Zone Trigger", command=self.add_trigger).pack(pady=5)
+        tk.Button(f_l, text="Remove Trigger", bg="#ffcccc", command=self.remove_trigger).pack(pady=2)
 
         tk.Label(f_r, text="PC Outputs", font=("Arial", 10, "bold")).pack()
         self.lb_outputs = tk.Listbox(f_r, height=10)
         self.lb_outputs.pack(fill=tk.BOTH, expand=True)
         tk.Button(f_r, text="+ Add PC Action", command=self.add_output).pack(pady=5)
+        tk.Button(f_r, text="Remove Output", bg="#ffcccc", command=self.remove_output).pack(pady=2)
 
-        tk.Button(self, text="Save Combo", bg="#ccffcc", command=self.save, font=("Arial", 10, "bold")).pack(side=tk.BOTTOM, pady=10)
+        tk.Button(self, text="Save Combo", bg="#ccffcc", font=("Arial", 10, "bold"), command=self.save).pack(side=tk.BOTTOM, pady=10)
+        self.refresh()
 
     def refresh(self):
         self.lb_triggers.delete(0, tk.END)
@@ -874,21 +954,35 @@ class ComboBuilder(tk.Toplevel):
         cb.current(0)
         
         def confirm():
-            if cb.get() not in self.triggers:
-                self.triggers.append(cb.get())
+            val = cb.get()
+            if val and val not in self.triggers:
+                self.triggers.append(val)
             self.refresh()
             tw.destroy()
             
         tk.Button(tw, text="Add", command=confirm).pack(pady=5)
 
+    def remove_trigger(self):
+        sel = self.lb_triggers.curselection()
+        if sel:
+            del self.triggers[sel[0]]
+            self.refresh()
+
     def add_output(self):
-        ActionSelectorDialog(self, multi_select=True, callback=lambda a: (self.outputs.extend(a), self.refresh()))
+        ActionSelectorDialog(self, multi_select=True, callback=lambda a: (self.outputs.extend([x for x in a if x != "None"]), self.refresh()))
+
+    def remove_output(self):
+        sel = self.lb_outputs.curselection()
+        if sel:
+            del self.outputs[sel[0]]
+            self.refresh()
 
     def save(self):
         if not self.triggers or not self.outputs:
-            messagebox.showerror("Error", "Need 1 trigger and 1 output.")
+            messagebox.showerror("Error", "Need at least 1 trigger and 1 output.")
             return
-        self.on_save({"triggers": self.triggers, "outputs": list(set(self.outputs))})
+        data = {"triggers": self.triggers, "outputs": list(set(self.outputs))}
+        self.on_save(data, self.edit_index)
         self.destroy()
 
     def destroy(self):
@@ -903,7 +997,7 @@ class ComboEditor(tk.Toplevel):
         super().__init__(parent)
         self.transient(parent)
         self.title("Combo Manager")
-        self.geometry("450x350")
+        self.geometry("480x380")
         
         self.protocol("WM_DELETE_WINDOW", self.destroy)
         self.wait_visibility()
@@ -916,14 +1010,26 @@ class ComboEditor(tk.Toplevel):
 
         btn_frame = tk.Frame(self)
         btn_frame.pack(pady=5)
-        tk.Button(btn_frame, text="Add Combo", bg="#ccffcc", command=lambda: ComboBuilder(self, self.on_add)).pack(side=tk.LEFT, padx=5)
+        tk.Button(btn_frame, text="Add Combo", bg="#ccffcc", command=lambda: ComboBuilder(self, self.on_save_combo)).pack(side=tk.LEFT, padx=5)
+        tk.Button(btn_frame, text="Edit Selected", bg="#ffffcc", command=self.edit_combo).pack(side=tk.LEFT, padx=5)
         tk.Button(btn_frame, text="Delete Selected", bg="#ffcccc", command=self.del_combo).pack(side=tk.LEFT, padx=5)
 
-    def on_add(self, data):
+    def on_save_combo(self, data, edit_index=None):
         with state_lock:
-            combos.append(data)
+            if edit_index is not None and 0 <= edit_index < len(combos):
+                combos[edit_index] = data
+            else:
+                combos.append(data)
         save_config()
         self.refresh()
+
+    def edit_combo(self):
+        sel = self.listbox.curselection()
+        if sel:
+            idx = sel[0]
+            with state_lock:
+                combo_data = combos[idx]
+            ComboBuilder(self, self.on_save_combo, existing_data=combo_data, edit_index=idx)
 
     def del_combo(self):
         sel = self.listbox.curselection()
@@ -952,7 +1058,7 @@ class VisualTouchEditor(tk.Toplevel):
         super().__init__(parent)
         self.transient(parent)
         self.title("Nintendo DS Touch Screen Editor")
-        self.geometry("820x800")
+        self.geometry("820x860")
   
         self.protocol("WM_DELETE_WINDOW", self.destroy)
         self.wait_visibility()
@@ -966,7 +1072,6 @@ class VisualTouchEditor(tk.Toplevel):
         )
         self.canvas.pack(pady=10)
 
-        # Settings
         settings = tk.Frame(self)
         settings.pack(fill=tk.X, padx=10, pady=5)
 
@@ -981,9 +1086,22 @@ class VisualTouchEditor(tk.Toplevel):
         ttk.Combobox(settings, textvariable=self.fallback, values=["Mouse Move", "Right Stick", "None"], state="readonly", width=12).pack(side=tk.LEFT, padx=5)
         self.fallback.trace("w", lambda *args: self.update_settings())
 
-        tk.Button(settings, text="Apply", bg="#ffffcc", command=self.send_overlay).pack(side=tk.RIGHT)
+        tk.Button(settings, text="Apply", bg="#ffffcc", command=send_current_overlay_to_ds).pack(side=tk.RIGHT)
 
-        # Toolbars
+        # --- SENSITIVITY (INVERSION REMOVED) ---
+        sens_frame = tk.Frame(self)
+        sens_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        self.sens_var = tk.DoubleVar(value=touch_sensitivity)
+        tk.Scale(
+            sens_frame, 
+            variable=self.sens_var, 
+            from_=0.1, to=5.0, resolution=0.1, 
+            orient=tk.HORIZONTAL, 
+            label="Touchscreen Sensitivity (Mouse / Right Stick)", 
+            command=self.update_sens
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True)
+
         tools_top = tk.Frame(self)
         tools_top.pack(pady=2)
 
@@ -1008,7 +1126,6 @@ class VisualTouchEditor(tk.Toplevel):
         
         tk.Button(tools_bottom, text="Reassign Action", command=self.reassign_action).pack(side=tk.LEFT, padx=5)
         tk.Button(tools_bottom, text="Recolor Fill", command=self.recolor_zone).pack(side=tk.LEFT, padx=5)
-        
         tk.Button(tools_bottom, text="Transparent Fill", command=self.transparent_zone).pack(side=tk.LEFT, padx=5)
         tk.Button(tools_bottom, text="Recolor Outline", command=self.recolor_outline).pack(side=tk.LEFT, padx=5)
         
@@ -1037,49 +1154,6 @@ class VisualTouchEditor(tk.Toplevel):
         self.update_paint_layer()
         self.redraw()
 
-    def send_overlay(self):
-        global ds_canvas_image, ds_canvas_draw
-        base_img = Image.new("RGBA", (DS_WIDTH, DS_HEIGHT), (20, 20, 20, 255))
-        draw = ImageDraw.Draw(base_img)
-        with state_lock:
-            if show_zones_on_ds and use_zones:
-                for zone in touch_zones:
-                    x1, y1, x2, y2 = zone["rect"]
-                    fill_color = zone.get("color", "#883333")
-                    outline_color = zone.get("outline", "#ffffff")
-                    if fill_color == "":
-                        fill_color = (0, 0, 0, 0)
-                    draw.rectangle(
-                        [min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2)],
-                        fill=fill_color, outline=outline_color, width=2
-                    )
-                    draw.text(
-                        (min(x1, x2) + 4, min(y1, y2) + 4),
-                        f"{zone.get('name', 'Zone')}\n({zone['action']})",
-                        fill="#ffffff"
-                    )
-            base_img.alpha_composite(ds_canvas_image)
-
-        rle = encode_image_rle(base_img)
-        header = struct.pack(">BHHHH", 0x01, 0, 0, DS_WIDTH, DS_HEIGHT)
-        size_field = struct.pack(">I", len(rle))
-        packet = header + size_field + rle + b"\xFE"
-
-        with sock_lock:
-            conn = client_conn
-        if conn:
-            try:
-                # The client socket normally runs with a 1s timeout. A large
-                # RLE image can exceed it, causing a PARTIAL sendall() which
-                # corrupts the DS's length-prefixed receive state machine.
-                conn.settimeout(5.0)
-                conn.sendall(packet)
-                conn.settimeout(1.0)
-            except Exception as e:
-                print(f"Failed to send overlay: {e}")
-                try: conn.settimeout(1.0)
-                except Exception: pass
-
     def update_paint_layer(self):
         with state_lock:
             img = ds_canvas_image.resize(
@@ -1087,10 +1161,7 @@ class VisualTouchEditor(tk.Toplevel):
                 RESAMPLE_NEAREST
             )
         self.tk_bg_img = ImageTk.PhotoImage(img)
-        self.canvas.itemconfig(
-            "paint_layer",
-            image=self.tk_bg_img
-        )
+        self.canvas.itemconfig("paint_layer", image=self.tk_bg_img)
         self.canvas.tag_lower("paint_layer")
 
     def request_paint_update(self):
@@ -1109,6 +1180,11 @@ class VisualTouchEditor(tk.Toplevel):
         fallback_action = self.fallback.get()
         save_config()
         self.redraw()
+
+    def update_sens(self, val):
+        global touch_sensitivity
+        touch_sensitivity = float(val)
+        save_config()
 
     def choose_color(self):
         palette_picker(self, lambda c: setattr(self, "brush_color", c))
@@ -1140,21 +1216,14 @@ class VisualTouchEditor(tk.Toplevel):
             def cb(a):
                 if a:
                     with state_lock:
-                        touch_zones[self.selected]["action"] = a[0]
+                        touch_zones[self.selected]["action"] = "" if a[0] == "None" else a[0]
                     save_config()
                     self.redraw()
             ActionSelectorDialog(self, callback=cb)
 
     def recolor_zone(self):
         if self.selected is not None and self.selected < len(touch_zones):
-            palette_picker(
-                self,
-                lambda c: (
-                    touch_zones[self.selected].update({"color": c}),
-                    save_config(),
-                    self.redraw()
-                )
-            )
+            palette_picker(self, lambda c: (touch_zones[self.selected].update({"color": c}), save_config(), self.redraw()))
             
     def transparent_zone(self):
         if self.selected is not None and self.selected < len(touch_zones):
@@ -1164,27 +1233,12 @@ class VisualTouchEditor(tk.Toplevel):
         
     def recolor_outline(self):
         if self.selected is not None and self.selected < len(touch_zones):
-            palette_picker(
-                self,
-                lambda c: (
-                    touch_zones[self.selected].update({"outline": c}),
-                    save_config(),
-                    self.redraw()
-                )
-            )
+            palette_picker(self, lambda c: (touch_zones[self.selected].update({"outline": c}), save_config(), self.redraw()))
 
     def erase_at(self, x, y, b_size):
         global ds_canvas_draw
         with state_lock:
-            ds_canvas_draw.ellipse(
-                [
-                    x - b_size / 2,
-                    y - b_size / 2,
-                    x + b_size / 2,
-                    y + b_size / 2
-                ],
-                fill=(0, 0, 0, 0)
-            )
+            ds_canvas_draw.ellipse([x - b_size / 2, y - b_size / 2, x + b_size / 2, y + b_size / 2], fill=(0, 0, 0, 0))
 
     def redraw(self):
         self.canvas.delete("zone_layer")
@@ -1197,7 +1251,6 @@ class VisualTouchEditor(tk.Toplevel):
                 
                 fill_col = z.get("color", "#883333")
                 out_col = z.get("outline", "#ffffff")
-                
                 width = 3 if i == self.selected else 2
 
                 self.canvas.create_rectangle(
@@ -1229,7 +1282,6 @@ class VisualTouchEditor(tk.Toplevel):
                                 fill="white", outline="black",
                                 tags="zone_layer"
                             )
-                            
         self.canvas.tag_lower("paint_layer")
 
     def left_down(self, event):
@@ -1239,24 +1291,13 @@ class VisualTouchEditor(tk.Toplevel):
         if self.edit_mode.get() in ("paint", "erase"):
             self.last_paint_pt = (x, y)
             b_size = self.brush_size.get()
-            
             if self.edit_mode.get() == "paint":
                 hex_color = self.brush_color.lstrip("#")
-                if len(hex_color) == 6:
-                    rgba = (
-                        int(hex_color[0:2], 16),
-                        int(hex_color[2:4], 16),
-                        int(hex_color[4:6], 16),
-                        255
-                    )
-                else:
-                    rgba = (255, 255, 255, 255)
-                    
+                rgba = (int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16), 255) if len(hex_color) == 6 else (255, 255, 255, 255)
                 with state_lock:
                     ds_canvas_draw.ellipse([x - b_size/2, y - b_size/2, x + b_size/2, y + b_size/2], fill=rgba)
             else:
                 self.erase_at(x, y, b_size)
-                
             self.request_paint_update()
             return
 
@@ -1268,9 +1309,7 @@ class VisualTouchEditor(tk.Toplevel):
                 min_y, max_y = min(y1, y2), max(y1, y2)
                 
                 resize_margin = 8
-                if (min_x - resize_margin) <= x <= (max_x + resize_margin) and \
-                   (min_y - resize_margin) <= y <= (max_y + resize_margin):
-                    
+                if (min_x - resize_margin) <= x <= (max_x + resize_margin) and (min_y - resize_margin) <= y <= (max_y + resize_margin):
                     left = abs(x - min_x) <= resize_margin
                     right = abs(x - max_x) <= resize_margin
                     top = abs(y - min_y) <= resize_margin
@@ -1292,9 +1331,7 @@ class VisualTouchEditor(tk.Toplevel):
         self.mode = "draw"
         self.start = (x, y)
         self.redraw()
-        self.temp = self.canvas.create_rectangle(
-            event.x, event.y, event.x, event.y, outline="green", width=2, tags="temp_zone"
-        )
+        self.temp = self.canvas.create_rectangle(event.x, event.y, event.x, event.y, outline="green", width=2, tags="temp_zone")
 
     def drag(self, event):
         x = max(0, min(DS_WIDTH, event.x / self.scale))
@@ -1304,40 +1341,17 @@ class VisualTouchEditor(tk.Toplevel):
             curr_pt = (x, y)
             if self.last_paint_pt:
                 b_size = self.brush_size.get()
-                
                 if self.edit_mode.get() == "paint":
                     hex_color = self.brush_color.lstrip("#")
-                    if len(hex_color) == 6:
-                        rgba = (
-                            int(hex_color[0:2], 16),
-                            int(hex_color[2:4], 16),
-                            int(hex_color[4:6], 16),
-                            255
-                        )
-                    else:
-                        rgba = (255, 255, 255, 255)
-                        
+                    rgba = (int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16), 255) if len(hex_color) == 6 else (255, 255, 255, 255)
                     lx, ly = self.last_paint_pt
                     cx, cy = curr_pt
-                    
-                    dist = max(
-                        1,
-                        int(((cx-lx)**2 + (cy-ly)**2)**0.5)
-                    )
-                    
+                    dist = max(1, int(((cx-lx)**2 + (cy-ly)**2)**0.5))
                     with state_lock:
                         for i in range(dist + 1):
                             ix = lx + (cx-lx) * (i / dist)
                             iy = ly + (cy-ly) * (i / dist) 
-                            ds_canvas_draw.ellipse(
-                                [
-                                    ix - b_size/2,
-                                    iy - b_size/2,
-                                    ix + b_size/2,
-                                    iy + b_size/2
-                                ],
-                                fill=rgba
-                            )
+                            ds_canvas_draw.ellipse([ix - b_size/2, iy - b_size/2, ix + b_size/2, iy + b_size/2], fill=rgba)
                 else:
                     lx, ly = self.last_paint_pt
                     cx, cy = curr_pt
@@ -1346,79 +1360,53 @@ class VisualTouchEditor(tk.Toplevel):
                         ix = lx + (cx - lx) * (i / dist)
                         iy = ly + (cy - ly) * (i / dist)
                         self.erase_at(ix, iy, b_size)
-                        
                 self.request_paint_update()
             self.last_paint_pt = curr_pt
             return
 
         if self.mode == "draw":
-            self.canvas.coords(
-                self.temp,
-                self.start[0] * self.scale,
-                self.start[1] * self.scale,
-                x * self.scale,
-                y * self.scale
-            )
-
+            self.canvas.coords(self.temp, self.start[0] * self.scale, self.start[1] * self.scale, x * self.scale, y * self.scale)
         elif self.mode == "move":
             with state_lock:
                 if self.selected is None or self.selected >= len(touch_zones):
                     return
-                
                 dx = x - self.start[0]
                 dy = y - self.start[1]
                 r = self.orig_rect
-                
                 min_x, max_x = min(r[0], r[2]), max(r[0], r[2])
                 min_y, max_y = min(r[1], r[3]), max(r[1], r[3])
                 
-                if min_x + dx < 0:
-                    dx = -min_x
-                if max_x + dx > DS_WIDTH:
-                    dx = DS_WIDTH - max_x
-                if min_y + dy < 0:
-                    dy = -min_y
-                if max_y + dy > DS_HEIGHT:
-                    dy = DS_HEIGHT - max_y
+                if min_x + dx < 0: dx = -min_x
+                if max_x + dx > DS_WIDTH: dx = DS_WIDTH - max_x
+                if min_y + dy < 0: dy = -min_y
+                if max_y + dy > DS_HEIGHT: dy = DS_HEIGHT - max_y
 
                 new_rect = [r[0] + dx, r[1] + dy, r[2] + dx, r[3] + dy]
                 if not zones_overlap(new_rect, self.selected):
                     touch_zones[self.selected]["rect"] = new_rect
             self.redraw()
-            
         elif self.mode == "resize":
             with state_lock:
                 if self.selected is None or self.selected >= len(touch_zones):
                     return
-                
                 dx = x - self.start[0]
                 dy = y - self.start[1]
                 r = self.orig_rect
-                
                 min_x, max_x = min(r[0], r[2]), max(r[0], r[2])
                 min_y, max_y = min(r[1], r[3]), max(r[1], r[3])
-                
                 left, right, top, bottom = self.resize_edges
                 
-                if left:
-                    min_x += dx
-                if right:
-                    max_x += dx
-                if top:
-                    min_y += dy
-                if bottom:
-                    max_y += dy
+                if left: min_x += dx
+                if right: max_x += dx
+                if top: min_y += dy
+                if bottom: max_y += dy
                 
                 if min_x > max_x - 5:
-                    if left:
-                        min_x = max_x - 5
-                    if right:
-                        max_x = min_x + 5
+                    if left: min_x = max_x - 5
+                    if right: max_x = min_x + 5
                 if min_y > max_y - 5:
-                    if top:
-                        min_y = max_y - 5
-                    if bottom:
-                        max_y = min_y + 5
+                    if top: min_y = max_y - 5
+                    if bottom: max_y = min_y + 5
                     
                 min_x = max(0, min(DS_WIDTH, min_x))
                 max_x = max(0, min(DS_WIDTH, max_x))
@@ -1437,20 +1425,14 @@ class VisualTouchEditor(tk.Toplevel):
 
         if self.mode == "draw":
             self.canvas.delete("temp_zone")
-            
-            x1 = self.start[0]
-            y1 = self.start[1]
-            x2 = event.x / self.scale
-            y2 = event.y / self.scale
+            x1, y1 = self.start[0], self.start[1]
+            x2, y2 = event.x / self.scale, event.y / self.scale
 
             if abs(x2 - x1) > 10 and abs(y2 - y1) > 10:
                 new_zone_rect = [
-                    max(0, min(x1, x2)), 
-                    max(0, min(y1, y2)), 
-                    min(DS_WIDTH, max(x1, x2)), 
-                    min(DS_HEIGHT, max(y1, y2))
+                    max(0, min(x1, x2)), max(0, min(y1, y2)), 
+                    min(DS_WIDTH, max(x1, x2)), min(DS_HEIGHT, max(y1, y2))
                 ]
-                
                 if zones_overlap(new_zone_rect):
                     self.mode = None
                     return
@@ -1471,12 +1453,11 @@ class VisualTouchEditor(tk.Toplevel):
                 def choose(action):
                     if action and self.selected is not None:
                         with state_lock:
-                            touch_zones[self.selected]["action"] = action[0]
+                            touch_zones[self.selected]["action"] = "" if action[0] == "None" else action[0]
                         save_config()
                         self.redraw()
 
                 ActionSelectorDialog(self, callback=choose)
-
         self.mode = None
 
     def destroy(self):
@@ -1490,8 +1471,8 @@ class ControlsWindow(tk.Toplevel):
     def __init__(self, parent):
         super().__init__(parent)
         self.transient(parent)
-        self.title("Nintendo DS Controls")
-        self.geometry("550x580")
+        self.title("Nintendo DS Controls & Combos")
+        self.geometry("550x650")
 
         self.protocol("WM_DELETE_WINDOW", self.destroy)
         self.wait_visibility()
@@ -1502,7 +1483,15 @@ class ControlsWindow(tk.Toplevel):
         tk.Label(self, text="Buttons flash RED when pressed. Click to map.").pack()
 
         self.canvas = tk.Canvas(self, width=510, height=480, bg="#dddddd")
-        self.canvas.pack(pady=10)
+        self.canvas.pack(pady=5)
+
+        tk.Button(
+            self, 
+            text="Open Combo Editor", 
+            font=("Arial", 10, "bold"), 
+            bg="#ccffcc", 
+            command=lambda: ComboEditor(self)
+        ).pack(pady=10)
 
         self.draw_ds()
         self.redraw_mappings()
@@ -1510,20 +1499,14 @@ class ControlsWindow(tk.Toplevel):
 
     def draw_ds(self):
         c = self.canvas
-
-        # Body
         c.create_rectangle(20, 20, 490, 220, fill="#ccc")
         c.create_rectangle(20, 240, 490, 480, fill="#ccc")
-
-        # Top Screen
         c.create_rectangle(127, 25, 383, 217, fill="black", tags="top_screen")
 
-        # Touch Screen
         c.create_rectangle(127, 260, 383, 452, fill="#222", tags="touch_screen")
         c.create_text(255, 356, text="EDIT\nTOUCH\nSCREEN", fill="white", justify=tk.CENTER, tags="touch_screen")
         c.tag_bind("touch_screen", "<Button-1>", lambda e: VisualTouchEditor(self))
 
-        # DS Buttons
         buttons = [
             ("A", "ds_A", 455, 345), ("B", "ds_B", 435, 365), ("X", "ds_X", 435, 325), ("Y", "ds_Y", 415, 345),
             ("START", "ds_START", 455, 457), ("SELECT", "ds_SELECT", 425, 457),
@@ -1544,7 +1527,11 @@ class ControlsWindow(tk.Toplevel):
     def map_button(self, key):
         def cb(a):
             if a:
-                single_mappings[key] = a[0]
+                if a[0] == "None":
+                    if key in single_mappings:
+                        del single_mappings[key]
+                else:
+                    single_mappings[key] = a[0]
                 save_config()
                 self.redraw_mappings()
         ActionSelectorDialog(self, callback=cb)
@@ -1557,7 +1544,7 @@ class ControlsWindow(tk.Toplevel):
             'L': (65, 205), 'R': (445, 205), 'START': (485, 470), 'SELECT': (395, 470)
         }
         for k, action in single_mappings.items():
-            if k in coords:
+            if k in coords and action != "None":
                 x, y = coords[k]
                 lbl = action.replace("Xbox ", "X-").replace("PS ", "P-").replace("Key ", "")
                 self.canvas.create_text(x, y, text=lbl, fill="blue", font=("Arial", 8, "bold"), tags="mapping_text")
@@ -1569,7 +1556,7 @@ class ControlsWindow(tk.Toplevel):
             except Exception:
                 pass
         self.after(50, self.update_feedback)
-        
+
     def destroy(self):
         try:
             self.grab_release()
@@ -1595,9 +1582,9 @@ class MainApp:
         self.start = tk.Button(root, text="Start Server", bg="#ccffcc", command=self.toggle)
         self.start.pack(pady=10)
 
-        tk.Button(root, text="Controls / Touch Editor", width=25, command=lambda: ControlsWindow(root)).pack(pady=3)
-        tk.Button(root, text="Combo Editor", width=25, command=lambda: ComboEditor(root)).pack(pady=3)
-        tk.Button(root, text="Save Config", width=25, command=save_config).pack(pady=3)
+        tk.Button(root, text="Controls / Mapping Manager", width=25, command=lambda: ControlsWindow(root)).pack(pady=3)
+        tk.Button(root, text="Quick Save", width=25, command=save_config).pack(pady=3)
+        tk.Button(root, text="Save Config As...", width=25, command=self.save_as_config).pack(pady=3)
         tk.Button(root, text="Load Config...", width=25, command=self.pick_config).pack(pady=3)
         
         self.config_label = tk.Label(root, text=f"Config: {os.path.basename(config_path)}", fg="gray", font=("Arial", 8))
@@ -1621,6 +1608,10 @@ class MainApp:
         if choose_config_file(self.root):
             self.config_label.config(text=f"Config: {os.path.basename(config_path)}")
 
+    def save_as_config(self):
+        if save_config_dialog(self.root):
+            self.config_label.config(text=f"Config: {os.path.basename(config_path)}")
+
     def toggle(self):
         global server_running, server_socket
 
@@ -1630,16 +1621,12 @@ class MainApp:
 
             with sock_lock:
                 if client_conn:
-                    try:
-                        client_conn.close()
-                    except Exception:
-                        pass
+                    try: client_conn.close()
+                    except Exception: pass
 
             if server_socket:
-                try:
-                    server_socket.close()
-                except Exception:
-                    pass
+                try: server_socket.close()
+                except Exception: pass
             return
 
         try:
@@ -1647,23 +1634,13 @@ class MainApp:
             if not (1 <= port <= 65535):
                 raise ValueError
         except ValueError:
-            messagebox.showerror(
-                "Invalid Port",
-                "Please enter a port between 1 and 65535."
-            )
+            messagebox.showerror("Invalid Port", "Please enter a port between 1 and 65535.")
             return
 
         server_running = True
-        threading.Thread(
-            target=accept_loop,
-            args=(port,),
-            daemon=True
-        ).start()
+        threading.Thread(target=accept_loop, args=(port,), daemon=True).start()
 
-        self.start.config(
-            text="Stop Server",
-            bg="#ffcccc"
-        )
+        self.start.config(text="Stop Server", bg="#ffcccc")
 
     def poll_inputs(self):
         while True:
