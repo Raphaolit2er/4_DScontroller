@@ -384,6 +384,7 @@ void runController(void) {
 
             // 3. Flush the list to the network (30Hz pacing)
             if ((frameCounter & 1) == 0) {
+                // A. Flush any buffered points first
                 if (touch_count > 0) {
                     uint8_t packet[64];
                     int idx = 0;
@@ -398,11 +399,15 @@ void runController(void) {
                     packet[idx++] = 0xFD;           // List END
                     if (send_all(sock, packet, idx) < 0) running = false;
                     touch_count = 0; // Empty the buffer after sending
-                } else if (!touch_active && last_touch_state) {
+                }
+                
+                // B. Independently check if the screen was released
+                if (!touch_active && last_touch_state) {
                     // Screen was just released (List with 0 items)
                     uint8_t packet[3] = {0xFC, 0x00, 0xFD};
                     if (send_all(sock, packet, 3) < 0) running = false;
                 }
+                
                 last_touch_state = touch_active;
             }
         }
