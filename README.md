@@ -18,7 +18,7 @@ How to Run:
 
 Disclaimers:
 - Multiple consoles at a time aren't tested and aren't recommended.
-- The control responsiveness relies entirely on local Wi-Fi stability and TCP packet transmission. From my testing, it was fast enough to play games such as Roblox Doors and Roblox Forsaken.
+- The control responsiveness relies entirely on local Wi-Fi stability and TCP packet transmission. From my testing, it was fast enough to play games such as Roblox Doors, Roblox Forsaken and BeamNG.Drive.
 - Memory leaks are a possibility although might be rare.
-- Windows note: `vgamepad` installs a virtual driver allowing your PC to recognize the DS as a real Xbox 360 or PlayStation 4 controller).
+- Windows note: `vgamepad` installs a virtual driver allowing your PC to recognize the DS as a real Xbox 360 or PlayStation 4 controller.
 - This project was made using AIs, as I am not a good enough coder to do that on my own. Sorry to people who thought it was made by hand.
